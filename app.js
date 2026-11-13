@@ -228,6 +228,9 @@
   };
   var memKey = null;
   function getKey() { return memKey || store.get(KEY_STORE) || ''; }
+  // True when the deployment's /api/td proxy has a shared key configured.
+  var serverKey = false;
+  function hasLive() { return !!getKey() || serverKey; }
 
   /* ---------- formatting ---------- */
   function fmtPrice(v) {
@@ -301,9 +304,12 @@
     var key = getKey(), tds = tdSymbol(sym), crypto = tds.indexOf('/') > 0;
     var hit = cache[sym];
     if (hit && Date.now() - hit.t < CACHE_MS) return Promise.resolve(hit.d);
-    var base = 'https://api.twelvedata.com/', q = 'symbol=' + encodeURIComponent(tds) + '&apikey=' + encodeURIComponent(key);
-    var series = fetchJson(base + 'time_series?interval=1day&outputsize=' + (crypto ? 366 : 253) + '&' + q);
-    var quote = fetchJson(base + 'quote?' + q).catch(function () { return null; });
+    // A personal key goes straight to Twelve Data; otherwise use the server proxy.
+    var url = key
+      ? function (ep, extra) { return 'https://api.twelvedata.com/' + ep + '?symbol=' + encodeURIComponent(tds) + '&apikey=' + encodeURIComponent(key) + extra; }
+      : function (ep, extra) { return '/api/td?endpoint=' + ep + '&symbol=' + encodeURIComponent(tds) + extra; };
+    var series = fetchJson(url('time_series', '&interval=1day&outputsize=' + (crypto ? 366 : 253)));
+    var quote = fetchJson(url('quote', '')).catch(function () { return null; });
     return Promise.all([series, quote]).then(function (res) {
       var ts = res[0], qt = res[1];
       if (!ts || ts.status === 'error' || !ts.values) throw new Error((ts && ts.message) || 'Twelve Data returned no history for ' + sym + '.');
@@ -325,11 +331,11 @@
   function loadSymbol(sym) {
     sym = String(sym || '').trim().toUpperCase().replace(/[^A-Z0-9./-]/g, '');
     if (!sym) return;
-    if (state.mode === 'pasted') state.mode = getKey() ? 'live' : 'sample';
+    if (state.mode === 'pasted') state.mode = hasLive() ? 'live' : 'sample';
     state.symbol = sym;
     $('ticker-input').value = sym;
     document.querySelectorAll('.chips .chip').forEach(function (c) { c.classList.toggle('is-active', c.dataset.sym === sym); });
-    if (state.mode === 'live' && getKey()) {
+    if (state.mode === 'live' && hasLive()) {
       setStatus('loading');
       $('q-symbol').textContent = sym;
       liveData(sym).then(applyData).catch(function (e) {
@@ -769,7 +775,7 @@
       closeModal(); loadSymbol(state.symbol);
     });
     $('key-clear').addEventListener('click', function () {
-      memKey = null; store.del(KEY_STORE); state.mode = 'sample'; $('key-input').value = '';
+      memKey = null; store.del(KEY_STORE); state.mode = serverKey ? 'live' : 'sample'; $('key-input').value = ''; cache = {};
       closeModal(); loadSymbol(state.symbol);
     });
     $('sample-use').addEventListener('click', function () { state.mode = 'sample'; closeModal(); loadSymbol(state.symbol); });
@@ -794,6 +800,14 @@
     state.mode = getKey() ? 'live' : 'sample';
     syncTheme();
     loadSymbol('NVDA');
+
+    // On a deployment with a shared key, switch from sample data to live prices.
+    if (!getKey() && location.protocol.indexOf('http') === 0) {
+      fetch('/api/td?ping=1').then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+        if (j && j.ok && !getKey() && state.mode === 'sample') { serverKey = true; state.mode = 'live'; loadSymbol(state.symbol); }
+        else if (j && j.ok) serverKey = true;
+      }).catch(function () {});
+    }
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
