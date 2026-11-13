@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quant Lab</title>
+  <meta name="description" content="Quant toolkit: Monte Carlo price simulation, Black-Scholes option pricing with Greeks, implied volatility solver." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0d12'/%3E%3Cpath d='M5 25 C9 25 11 8 16 8 C21 8 23 25 27 25' fill='none' stroke='%2338d996' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M5 25 H27' stroke='%238b94a5' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Quant Lab home">
+      <svg class="logo" viewBox="0 0 32 32" width="28" height="28" fill="none" aria-label="Quant Lab logo" role="img">
+        <path d="M4 25 C9 25 11 7 16 7 C21 7 23 25 28 25" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" class="logo-curve"/>
+        <path d="M4 25 H28" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity=".45"/>
+        <path d="M16 7 V25" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2.5" opacity=".55"/>
+      </svg>
+      <span class="brand-name">Quant Lab</span>
+    </a>
+
+    <form class="ticker-form" id="ticker-form" autocomplete="off">
+      <label class="sr-only" for="ticker-input">Ticker symbol</label>
+      <div class="ticker-field">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="ticker-input" type="text" value="NVDA" maxlength="12" spellcheck="false" placeholder="Ticker (e.g. AAPL, SPY, BTCUSD)" />
+        <kbd>↵</kbd>
+      </div>
+      <div class="chips" aria-label="Quick tickers">
+        <button type="button" class="chip" data-sym="NVDA">NVDA</button>
+        <button type="button" class="chip" data-sym="AAPL">AAPL</button>
+        <button type="button" class="chip" data-sym="TSLA">TSLA</button>
+        <button type="button" class="chip" data-sym="SPY">SPY</button>
+        <button type="button" class="chip" data-sym="BTCUSD">BTC</button>
+      </div>
+    </form>
+
+    <div class="topbar-actions">
+      <button class="btn btn-ghost" id="data-btn" type="button">Data source</button>
+      <button class="icon-btn" data-theme-toggle aria-label="Switch to light mode" type="button"></button>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="notice" id="data-note" hidden>
+      <span id="data-note-text"></span>
+      <button type="button" class="chip" id="data-note-btn">Connect live data</button>
+    </div>
+
+    <!-- Quote strip -->
+    <section class="quote-strip" id="quote-strip" aria-live="polite">
+      <div class="quote-head">
+        <div>
+          <div class="eyebrow"><span id="q-symbol">—</span> <span class="dot" aria-hidden="true">·</span> <span id="q-status" class="status-pill">loading</span></div>
+          <h1 class="quote-name" id="q-name">Loading market data…</h1>
+        </div>
+        <div class="quote-price">
+          <div class="price-main num" id="q-price">—</div>
+          <div class="price-change num" id="q-change">—</div>
+          <div class="price-asof" id="q-asof">—</div>
+        </div>
+      </div>
+      <div class="kpi-row">
+        <div class="kpi"><span class="kpi-label">Realized vol · 20d</span><span class="kpi-value num" id="k-vol20">—</span></div>
+        <div class="kpi"><span class="kpi-label">Realized vol · 60d</span><span class="kpi-value num" id="k-vol60">—</span></div>
+        <div class="kpi"><span class="kpi-label">Realized vol · 1y</span><span class="kpi-value num" id="k-vol1y">—</span></div>
+        <div class="kpi"><span class="kpi-label">1y return</span><span class="kpi-value num" id="k-ret">—</span></div>
+        <div class="kpi"><span class="kpi-label">Max drawdown · 1y</span><span class="kpi-value num" id="k-mdd">—</span></div>
+        <div class="kpi kpi-range">
+          <span class="kpi-label">52-week range</span>
+          <div class="range-bar" aria-hidden="true"><div class="range-fill" id="k-range-fill"></div><div class="range-marker" id="k-range-marker"></div></div>
+          <div class="range-ends num"><span id="k-low">—</span><span id="k-high">—</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <!-- Price history -->
+      <section class="card card-history">
+        <header class="card-head">
+          <div>
+            <h2>Price history</h2>
+            <p class="card-sub">Daily closes, trailing 12 months. Hover for values.</p>
+          </div>
+          <div class="legend" id="hist-legend"><span class="legend-item"><i class="swatch swatch-accent"></i>Close</span><span class="legend-item"><i class="swatch swatch-muted"></i>20-day mean</span></div>
+        </header>
+        <div class="chart-wrap"><canvas id="hist-canvas" role="img" aria-label="Price history line chart"></canvas><div class="tooltip" id="hist-tip" hidden></div></div>
+      </section>
+
+      <!-- Monte Carlo -->
+      <section class="card card-mc">
+        <header class="card-head">
+          <div>
+            <h2>Monte Carlo simulator</h2>
+            <p class="card-sub">Geometric Brownian motion. Bands show the 5–95th and 25–75th percentiles across all paths; the histogram on the right is the terminal price distribution.</p>
+          </div>
+          <button class="btn btn-primary" id="mc-run" type="button">Re-run</button>
+        </header>
+        <div class="controls">
+          <label class="ctrl"><span>Paths <output id="mc-paths-out">2,000</output></span><input type="range" id="mc-paths" min="200" max="10000" step="200" value="2000" /></label>
+          <label class="ctrl"><span>Horizon <output id="mc-days-out">126 trading days</output></span><input type="range" id="mc-days" min="5" max="504" step="1" value="126" /></label>
+          <label class="ctrl ctrl-num"><span>Volatility (annual %)</span><input type="number" id="mc-vol" step="0.5" min="1" max="400" /></label>
+          <label class="ctrl ctrl-num"><span>Drift (annual %)</span><input type="number" id="mc-drift" step="0.5" min="-100" max="200" /></label>
+          <label class="ctrl ctrl-num"><span>Target price</span><input type="number" id="mc-target" step="0.01" min="0" /></label>
+          <div class="ctrl ctrl-presets"><span>Presets</span><div class="preset-row"><button type="button" class="chip" id="mc-use-hist">Historical drift</button><button type="button" class="chip" id="mc-use-rn">Risk-neutral</button><button type="button" class="chip" id="mc-use-zero">Zero drift</button></div></div>
+        </div>
+        <div class="chart-wrap chart-tall"><canvas id="mc-canvas" role="img" aria-label="Monte Carlo simulated price paths with percentile bands"></canvas></div>
+        <div class="legend legend-bottom"><span class="legend-item"><i class="swatch swatch-accent"></i>Median path</span><span class="legend-item"><i class="swatch swatch-band"></i>Percentile bands</span><span class="legend-item"><i class="swatch swatch-amber"></i>Target</span></div>
+        <div class="stat-grid" id="mc-stats">
+          <div class="stat"><span class="stat-label">Median terminal</span><span class="stat-value num" id="s-median">—</span></div>
+          <div class="stat"><span class="stat-label">5th / 95th pct</span><span class="stat-value num" id="s-p5p95">—</span></div>
+          <div class="stat"><span class="stat-label">Prob. above target</span><span class="stat-value num" id="s-prob">—</span></div>
+          <div class="stat"><span class="stat-label">Expected return</span><span class="stat-value num" id="s-exp">—</span></div>
+          <div class="stat"><span class="stat-label">95% VaR</span><span class="stat-value num" id="s-var">—</span></div>
+          <div class="stat"><span class="stat-label">95% CVaR</span><span class="stat-value num" id="s-cvar">—</span></div>
+        </div>
+      </section>
+
+      <!-- Options -->
+      <section class="card card-opt">
+        <header class="card-head">
+          <div>
+            <h2>Black-Scholes pricer</h2>
+            <p class="card-sub">European option value and Greeks at the current spot. Enter a market price to back out implied volatility.</p>
+          </div>
+          <div class="seg" role="tablist" aria-label="Option type">
+            <button type="button" class="seg-btn is-active" data-type="call" role="tab" aria-selected="true">Call</button>
+            <button type="button" class="seg-btn" data-type="put" role="tab" aria-selected="false">Put</button>
+          </div>
+        </header>
+        <div class="controls controls-opt">
+          <label class="ctrl ctrl-num"><span>Spot</span><input type="number" id="o-spot" step="0.01" min="0.01" /></label>
+          <label class="ctrl ctrl-num"><span>Strike</span><input type="number" id="o-strike" step="0.5" min="0.01" /></label>
+          <label class="ctrl ctrl-num"><span>Days to expiry</span><input type="number" id="o-days" step="1" min="1" max="1825" value="30" /></label>
+          <label class="ctrl ctrl-num"><span>Risk-free rate (%)</span><input type="number" id="o-rate" step="0.05" min="-5" max="30" value="4.25" /></label>
+          <label class="ctrl ctrl-num"><span>Volatility (%)</span><input type="number" id="o-vol" step="0.5" min="1" max="400" /></label>
+          <label class="ctrl ctrl-num"><span>Market price → IV</span><input type="number" id="o-mkt" step="0.01" min="0" placeholder="optional" /></label>
+        </div>
+        <div class="opt-result">
+          <div class="opt-price">
+            <span class="stat-label" id="o-price-label">Call value</span>
+            <span class="opt-price-value num" id="o-price">—</span>
+            <span class="opt-price-sub num" id="o-price-sub">—</span>
+          </div>
+          <div class="greeks">
+            <div class="greek"><span class="greek-name">Δ Delta</span><span class="num" id="g-delta">—</span></div>
+            <div class="greek"><span class="greek-name">Γ Gamma</span><span class="num" id="g-gamma">—</span></div>
+            <div class="greek"><span class="greek-name">ν Vega <small>/1%</small></span><span class="num" id="g-vega">—</span></div>
+            <div class="greek"><span class="greek-name">Θ Theta <small>/day</small></span><span class="num" id="g-theta">—</span></div>
+            <div class="greek"><span class="greek-name">ρ Rho <small>/1%</small></span><span class="num" id="g-rho">—</span></div>
+            <div class="greek"><span class="greek-name">Implied vol</span><span class="num" id="g-iv">—</span></div>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="opt-canvas" role="img" aria-label="Option payoff at expiry and theoretical value today across spot prices"></canvas></div>
+        <div class="legend legend-bottom"><span class="legend-item"><i class="swatch swatch-accent"></i>Value today</span><span class="legend-item"><i class="swatch swatch-muted"></i>Payoff at expiry</span><span class="legend-item"><i class="swatch swatch-amber"></i>Breakeven</span></div>
+      </section>
+
+      <!-- Strike ladder -->
+      <section class="card card-ladder">
+        <header class="card-head">
+          <div>
+            <h2>Strike ladder</h2>
+            <p class="card-sub">Calls and puts around the money using the pricer's expiry, rate and volatility. The shaded row is at-the-money. Click a row to price that strike.</p>
+          </div>
+        </header>
+        <div class="table-wrap">
+          <table class="ladder" id="ladder">
+            <thead>
+              <tr><th class="num">Call Δ</th><th class="num">Call</th><th class="num strike-col">Strike</th><th class="num">Put</th><th class="num">Put Δ</th><th class="num">P(ITM) call</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <p class="footnote" id="footnote">Models assume lognormal returns, constant volatility and no dividends. A teaching tool, not trading advice.</p>
+  </main>
+
+  <!-- Data source panel -->
+  <div class="modal" id="data-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="data-title">
+      <header class="modal-head">
+        <h2 id="data-title">Data source</h2>
+        <button type="button" class="icon-btn" id="data-close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+
+      <section class="modal-sec">
+        <h3>Live prices from Twelve Data</h3>
+        <p>Paste a free API key from <a href="https://twelvedata.com/account/api-keys" target="_blank" rel="noopener">twelvedata.com</a>. It is stored only in this browser. Each lookup uses 2 of the free plan's 800 daily requests, and results are cached for 5 minutes.</p>
+        <div class="modal-row">
+          <label class="sr-only" for="key-input">Twelve Data API key</label>
+          <input type="password" id="key-input" placeholder="API key" spellcheck="false" autocomplete="off" />
+          <button type="button" class="btn btn-primary" id="key-save">Save and load</button>
+          <button type="button" class="btn btn-ghost" id="key-clear">Remove key</button>
+        </div>
+      </section>
+
+      <section class="modal-sec">
+        <h3>Paste your own price history</h3>
+        <p>One close per line, or a CSV with Date and Close columns (a Yahoo or Stooq export works). At least 30 rows.</p>
+        <label class="sr-only" for="paste-name">Label for pasted series</label>
+        <input type="text" id="paste-name" placeholder="Label, e.g. MSFT" maxlength="24" spellcheck="false" />
+        <label class="sr-only" for="paste-input">Pasted price data</label>
+        <textarea id="paste-input" rows="5" spellcheck="false" placeholder="Date,Close&#10;2026-01-02,187.40&#10;2026-01-05,189.12"></textarea>
+        <div class="modal-row"><button type="button" class="btn btn-primary" id="paste-load">Load pasted data</button></div>
+      </section>
+
+      <section class="modal-sec">
+        <h3>Sample data</h3>
+        <p>Simulated series indexed to 100, with a different volatility per ticker. Not real prices.</p>
+        <div class="modal-row"><button type="button" class="btn btn-ghost" id="sample-use">Use sample data</button></div>
+      </section>
+      <p class="modal-msg" id="data-msg" role="status"></p>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
