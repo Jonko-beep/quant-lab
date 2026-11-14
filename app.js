@@ -59,6 +59,52 @@
     return 0.5 * (lo + hi);
   };
 
+  // Multi-leg strategy, per share. Legs: { kind: 'stock' | 'call' | 'put', q: +1 | -1, k: strike }.
+  // Profit and loss at expiry is piecewise linear with kinks at the strikes.
+  QL.strategy = function (legs, S, T, r, sigma) {
+    var prices = legs.map(function (l) { return l.kind === 'stock' ? S : QL.bs(l.kind, S, l.k, T, r, sigma).price; });
+    var cost = 0, slope = 0, knots = [0];
+    legs.forEach(function (l, i) {
+      cost += l.q * prices[i];
+      if (l.kind !== 'put') slope += l.q; // slope of P/L above the highest strike
+      if (l.kind !== 'stock' && knots.indexOf(l.k) < 0) knots.push(l.k);
+    });
+    knots.sort(function (a, b) { return a - b; });
+    var plExp = function (s) {
+      var v = -cost;
+      legs.forEach(function (l) { v += l.q * (l.kind === 'stock' ? s : Math.max(l.kind === 'call' ? s - l.k : l.k - s, 0)); });
+      return v;
+    };
+    var plNow = function (s) {
+      var v = -cost;
+      legs.forEach(function (l) { v += l.q * (l.kind === 'stock' ? s : QL.bs(l.kind, s, l.k, T, r, sigma).price); });
+      return v;
+    };
+    var vals = knots.map(plExp);
+    var maxP = Math.max.apply(null, vals), maxL = Math.min.apply(null, vals);
+    if (slope > 1e-9) maxP = Infinity;
+    if (slope < -1e-9) maxL = -Infinity;
+    var bes = [];
+    for (var i = 1; i < knots.length; i++) {
+      var a = vals[i - 1], b = vals[i];
+      if (a * b < 0) bes.push(knots[i - 1] + (knots[i] - knots[i - 1]) * a / (a - b));
+    }
+    var last = knots[knots.length - 1], lv = vals[vals.length - 1];
+    if (Math.abs(slope) > 1e-9 && -lv / slope > 0) bes.push(last - lv / slope);
+    // Chance the price at expiry lands where P/L is positive (lognormal, drifting at the risk-free rate).
+    var cdf = function (x) {
+      if (!(x > 0)) return 0;
+      if (x === Infinity) return 1;
+      return QL.normCdf(-(Math.log(S / x) + (r - 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T)));
+    };
+    var edges = [0].concat(bes, [Infinity]), prob = 0;
+    for (var j = 0; j + 1 < edges.length; j++) {
+      var lo = edges[j], hi = edges[j + 1], mid = hi === Infinity ? lo * 2 + 1 : (lo + hi) / 2;
+      if (plExp(mid) > 0) prob += cdf(hi) - cdf(lo);
+    }
+    return { prices: prices, cost: cost, plExp: plExp, plNow: plNow, knots: knots, maxP: maxP, maxL: maxL, bes: bes, prob: prob };
+  };
+
   QL.logReturns = function (c) {
     var r = [];
     for (var i = 1; i < c.length; i++) r.push(Math.log(c[i] / c[i - 1]));
@@ -219,7 +265,7 @@
   var KEY_STORE = 'quantlab.twelvedata.key';
   var CACHE_MS = 5 * 60 * 1000;
   var cache = {};
-  var state = { symbol: 'NVDA', data: null, sim: null, optType: 'call', mode: 'sample' };
+  var state = { symbol: 'NVDA', data: null, sim: null, optType: 'call', mode: 'sample', strat: 'covered', stratK: {} };
 
   var store = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -403,8 +449,9 @@
       : d.source === 'pasted' ? 'Price history pasted by you. ' : 'Sample series are simulated and indexed to 100. ';
     $('footnote').textContent = src + 'Models assume lognormal returns, constant volatility and no dividends. A teaching tool, not trading advice.';
 
+    state.stratK = {};
     drawHistory();
-    runMC();
+    runMC(true);
     renderOptions();
   }
 
@@ -429,7 +476,7 @@
       ctx.fillStyle = col.muted; ctx.textAlign = 'left'; ctx.fillText(fmtAxis(v, step), labelX, py);
     });
   }
-  function palette() { return { ink: css('--ink'), muted: css('--muted'), line: css('--line'), accent: css('--accent'), amber: css('--amber'), surface: css('--surface') }; }
+  function palette() { return { ink: css('--ink'), muted: css('--muted'), line: css('--line'), accent: css('--accent'), amber: css('--amber'), surface: css('--surface'), up: css('--up'), down: css('--down') }; }
 
   /* ---------- price history ---------- */
   var histGeom = null;
@@ -505,14 +552,29 @@
   }
 
   /* ---------- Monte Carlo ---------- */
-  function runMC() {
+  var mcAnim = 0;
+  function reducedMotion() { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+  // animate === true draws the paths outward from today; anything else paints the finished chart.
+  function runMC(animate) {
     var d = state.data; if (!d) return;
     var s0 = d.closes[d.closes.length - 1];
     var sigma = num('mc-vol') / 100, mu = num('mc-drift') / 100;
     if (!(sigma > 0)) sigma = 0.2;
     if (!isFinite(mu)) mu = 0;
     state.sim = QL.simulate({ s0: s0, mu: mu, sigma: sigma, days: +$('mc-days').value, paths: +$('mc-paths').value, ann: d.ann });
-    drawMC(); mcStats();
+    mcStats();
+    if (mcAnim) { cancelAnimationFrame(mcAnim); mcAnim = 0; }
+    if (animate === true && window.requestAnimationFrame && !reducedMotion()) {
+      var t0 = null, dur = 1200;
+      var frame = function (ts) {
+        if (t0 === null) t0 = ts;
+        var p = Math.min(1, (ts - t0) / dur);
+        drawMC(1 - Math.pow(1 - p, 3), true);
+        mcAnim = p < 1 ? requestAnimationFrame(frame) : 0;
+      };
+      drawMC(0, true);
+      mcAnim = requestAnimationFrame(frame);
+    } else drawMC();
   }
   function mcStats() {
     var sim = state.sim; if (!sim) return;
@@ -525,8 +587,10 @@
     $('s-var').textContent = fmtPct(s.var95, true);
     $('s-cvar').textContent = fmtPct(s.cvar95, true);
   }
-  function drawMC() {
+  function drawMC(prog, fromAnim) {
     var sim = state.sim; if (!sim) return;
+    if (mcAnim && !fromAnim) return; // the running animation repaints on its next frame
+    if (prog == null) prog = 1;
     var P = prep($('mc-canvas')), ctx = P.ctx, col = palette();
     var histW = P.w < 560 ? 64 : 120, axisW = 58;
     var m = { l: 6, t: 12, b: 24 }, pw = P.w - m.l - axisW - histW, ph = P.h - m.t - m.b;
@@ -547,7 +611,7 @@
       if (x(t) < m.l + pw - 10) ctx.fillText(t === 0 ? 'Today' : 'Day ' + t, x(t), P.h - 10);
     });
 
-    ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, pw, ph); ctx.clip();
+    ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, pw * prog, ph); ctx.clip();
     // sample paths
     var show = Math.min(50, sim.n), stride = Math.floor(sim.n / show);
     ctx.strokeStyle = col.muted; ctx.lineWidth = 0.7; ctx.globalAlpha = 0.22;
@@ -571,8 +635,14 @@
     for (var t3 = 0; t3 <= sim.steps; t3++) { if (t3) ctx.lineTo(x(t3), y(sim.pct[2][t3])); else ctx.moveTo(x(t3), y(sim.pct[2][t3])); }
     ctx.strokeStyle = col.accent; ctx.lineWidth = 2; ctx.stroke();
     ctx.restore();
+    if (prog < 1) { // leading dot on the median while the paths draw
+      var tf = prog * sim.steps, ti = Math.min(sim.steps - 1, Math.floor(tf)), med = sim.pct[2];
+      ctx.fillStyle = col.accent; ctx.beginPath();
+      ctx.arc(x(tf), y(med[ti] + (med[ti + 1] - med[ti]) * (tf - ti)), 3.5, 0, 7); ctx.fill();
+    }
 
-    // histogram of terminal prices
+    // histogram of terminal prices (grows in as the paths arrive)
+    var grow = Math.max(0, Math.min(1, (prog - 0.7) / 0.3));
     var bins = 40, counts = new Array(bins).fill(0), maxC = 0;
     for (var i = 0; i < sim.terminal.length; i++) {
       var b = Math.floor((sim.terminal[i] - lo) / (hi - lo) * bins);
@@ -584,7 +654,7 @@
       var mid = lo + (k + 0.5) / bins * (hi - lo);
       var above = showTarget ? mid > target : mid > sim.s0;
       ctx.fillStyle = above ? col.accent : col.muted; ctx.globalAlpha = above ? 0.75 : 0.45;
-      ctx.fillRect(hx, m.t + ph - (k + 1) * bh + 0.5, counts[k] / maxC * (histW - 10), Math.max(1, bh - 1));
+      ctx.fillRect(hx, m.t + ph - (k + 1) * bh + 0.5, counts[k] / maxC * (histW - 10) * grow, Math.max(1, bh - 1));
     }
     ctx.globalAlpha = 1;
     ctx.strokeStyle = col.line; ctx.beginPath(); ctx.moveTo(m.l + pw + 0.5, m.t); ctx.lineTo(m.l + pw + 0.5, m.t + ph); ctx.stroke();
@@ -613,6 +683,7 @@
       $('o-price-sub').textContent = 'Enter spot, strike, expiry and volatility';
       $('ladder').tBodies[0].innerHTML = '';
       prep($('opt-canvas'));
+      renderStrategy();
       return;
     }
     var b = QL.bs(type, o.S, o.K, o.T, o.r, o.sigma);
@@ -632,6 +703,7 @@
     } else { ivEl.textContent = '—'; ivEl.title = ''; }
     drawOption(o, b);
     renderLadder(o);
+    renderStrategy();
   }
 
   function drawOption(o, b) {
@@ -699,6 +771,175 @@
     }
   }
 
+  /* ---------- strategy builder ---------- */
+  // Each leg: [kind, quantity, strike offset in ladder steps from the at-the-money strike].
+  var STRATS = {
+    covered: { best: 'a small rise', legs: [['stock', 1, 0], ['call', -1, 2]], desc: 'You own the shares and sell a call above the current price. You pocket the premium now, but your gains stop at the strike.' },
+    protective: { best: 'a rise, with a floor', legs: [['stock', 1, 0], ['put', 1, -2]], desc: 'You own the shares and buy a put below the current price as insurance. Losses stop at the strike, for the cost of the put.' },
+    straddle: { best: 'a big move', legs: [['call', 1, 0], ['put', 1, 0]], desc: 'You buy a call and a put at the same strike. You profit from a big move in either direction and lose if the price stays where it is.' },
+    strangle: { best: 'a big move', legs: [['call', 1, 2], ['put', 1, -2]], desc: 'You buy a call above and a put below the current price. Cheaper than a straddle, but the price has to move further before you profit.' },
+    bull: { best: 'a moderate rise', legs: [['call', 1, 0], ['call', -1, 2]], desc: 'You buy a call and sell a higher-strike call to cut the cost. A bet on a moderate rise, with both profit and loss capped.' },
+    condor: { best: 'a quiet market', legs: [['put', 1, -4], ['put', -1, -2], ['call', -1, 2], ['call', 1, 4]], desc: 'You sell a call and a put around the current price and buy further-out ones as protection. You keep the credit if the price stays in the middle.' }
+  };
+  var stratView = null;
+  function fmtPL(v) {
+    var d = stratView && stratView.S < 1 ? 4 : 2;
+    return (v < 0 ? '−' : '+') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  }
+
+  function stratLegs(S) {
+    var step = QL.niceStep(S * 0.025), center = Math.round(S / step) * step;
+    return STRATS[state.strat].legs.map(function (l, i) {
+      var custom = state.stratK[i];
+      var k = custom > 0 ? custom : Math.max(step, +(center + l[2] * step).toFixed(6));
+      return { kind: l[0], q: l[1], k: k };
+    });
+  }
+
+  function setStrat(name) {
+    state.strat = name; state.stratK = {};
+    document.querySelectorAll('#st-presets .chip').forEach(function (c) {
+      var on = c.dataset.strat === name; c.classList.toggle('is-active', on); c.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    $('st-desc').textContent = STRATS[name].desc;
+    $('st-best').textContent = STRATS[name].best.charAt(0).toUpperCase() + STRATS[name].best.slice(1);
+    var box = $('st-legs'); box.innerHTML = '';
+    STRATS[name].legs.forEach(function (l, i) {
+      var el = document.createElement('div'); el.className = 'leg';
+      var side = document.createElement('span'); side.className = 'leg-side ' + (l[1] > 0 ? 'buy' : 'sell'); side.textContent = l[1] > 0 ? 'Buy' : 'Sell';
+      var what = document.createElement('span'); what.className = 'leg-what'; what.textContent = l[0] === 'stock' ? 'shares' : l[0];
+      el.appendChild(side); el.appendChild(what);
+      if (l[0] !== 'stock') {
+        var lab = document.createElement('label'); lab.appendChild(document.createTextNode('Strike'));
+        var inp = document.createElement('input'); inp.type = 'number'; inp.min = '0.01'; inp.dataset.leg = i;
+        inp.setAttribute('aria-label', (l[1] > 0 ? 'Buy ' : 'Sell ') + l[0] + ' strike');
+        inp.addEventListener('input', function () {
+          var v = parseFloat(inp.value);
+          if (v > 0) state.stratK[i] = v; else delete state.stratK[i];
+          renderStrategy();
+        });
+        lab.appendChild(inp); el.appendChild(lab);
+      }
+      var pr = document.createElement('span'); pr.className = 'leg-price num'; el.appendChild(pr);
+      box.appendChild(el);
+    });
+    renderStrategy();
+  }
+
+  function renderStrategy() {
+    var o = optInputs();
+    var ok = o.S > 0 && o.T > 0 && o.sigma > 0 && isFinite(o.r);
+    if (!ok) {
+      stratView = null;
+      ['st-cost', 'st-maxp', 'st-maxl', 'st-be', 'st-prob'].forEach(function (id) { $(id).textContent = '—'; });
+      prep($('st-canvas'));
+      return;
+    }
+    var legs = stratLegs(o.S), res = QL.strategy(legs, o.S, o.T, o.r, o.sigma);
+    var step = QL.niceStep(o.S * 0.025);
+    [].forEach.call($('st-legs').children, function (el, i) {
+      var inp = el.querySelector('input');
+      if (inp) {
+        inp.step = step;
+        if (!(state.stratK[i] > 0) && document.activeElement !== inp) inp.value = +legs[i].k.toFixed(4);
+      }
+      el.querySelector('.leg-price').textContent = '@ ' + fmtPrice(res.prices[i]);
+    });
+    $('st-cost-label').textContent = res.cost >= 0 ? 'Net cost' : 'Net credit';
+    $('st-cost').textContent = fmtPrice(Math.abs(res.cost));
+    $('st-maxp').textContent = res.maxP === Infinity ? 'Unlimited' : fmtPL(res.maxP);
+    $('st-maxl').textContent = res.maxL === -Infinity ? 'Unlimited' : fmtPL(res.maxL);
+    $('st-be').textContent = res.bes.length ? res.bes.map(fmtPrice).join(' / ') : '—';
+    $('st-prob').textContent = fmtPct(res.prob);
+    stratView = { res: res, S: o.S, legs: legs };
+    drawStrategy();
+  }
+
+  var stratGeom = null;
+  function drawStrategy(hoverS) {
+    var v = stratView; if (!v) return;
+    var res = v.res, P = prep($('st-canvas')), ctx = P.ctx, col = palette();
+    var m = { l: 6, r: 58, t: 12, b: 24 }, pw = P.w - m.l - m.r, ph = P.h - m.t - m.b;
+    var ks = v.legs.filter(function (l) { return l.kind !== 'stock'; }).map(function (l) { return l.k; });
+    var x0 = Math.min.apply(null, ks.concat(v.S)) * 0.75, x1 = Math.max.apply(null, ks.concat(v.S)) * 1.25;
+    var xs = [x0].concat(res.knots.filter(function (k) { return k > x0 && k < x1; }), [x1]);
+    var now = [], lo = 0, hi = 0, i;
+    for (i = 0; i <= 120; i++) { var s = x0 + (x1 - x0) * i / 120, pv = res.plNow(s); now.push([s, pv]); lo = Math.min(lo, pv); hi = Math.max(hi, pv); }
+    xs.forEach(function (s) { var e = res.plExp(s); lo = Math.min(lo, e); hi = Math.max(hi, e); });
+    var pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+    var x = function (s) { return m.l + (s - x0) / (x1 - x0) * pw; };
+    var y = function (p) { return m.t + (1 - (p - lo) / (hi - lo)) * ph; };
+    var tk = QL.ticks(lo, hi, 5), step = tk.length > 1 ? tk[1] - tk[0] : 1;
+    gridY(ctx, tk, y, m.l, m.l + pw, m.l + pw + 8, step, col);
+    var xt = QL.ticks(x0, x1, P.w < 520 ? 4 : 8), xstep = xt.length > 1 ? xt[1] - xt[0] : 1;
+    ctx.fillStyle = col.muted; ctx.textAlign = 'center';
+    xt.forEach(function (s) { if (x(s) > m.l + 16 && x(s) < m.l + pw - 16) ctx.fillText(fmtAxis(s, xstep), x(s), P.h - 10); });
+
+    // zero line
+    var y0 = Math.round(y(0)) + 0.5;
+    ctx.strokeStyle = col.muted; ctx.lineWidth = 1; ctx.globalAlpha = 0.7;
+    ctx.beginPath(); ctx.moveTo(m.l, y0); ctx.lineTo(m.l + pw, y0); ctx.stroke(); ctx.globalAlpha = 1;
+
+    var labels = [];
+    var vline = function (s, color, label, dash, row, preferLeft) {
+      if (s <= x0 || s >= x1) return;
+      var px = Math.round(x(s)) + 0.5, tw = ctx.measureText(label).width;
+      ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.setLineDash(dash);
+      ctx.beginPath(); ctx.moveTo(px, m.t); ctx.lineTo(px, m.t + ph); ctx.stroke(); ctx.setLineDash([]);
+      var right = preferLeft ? px - 6 - tw < m.l : px + 6 + tw < m.l + pw;
+      if (label) labels.push({ text: label, color: color, w: tw, x: right ? px + 6 : px - 6 - tw, y: m.t + 8 + row * 16 });
+    };
+    vline(v.S, col.muted, 'Spot ' + fmtPrice(v.S), [2, 3], 0);
+    // with two breakevens the lower one is labelled on its left, away from the profit zone
+    // (on narrow screens the lines stay unlabelled; the values are in the stats below)
+    res.bes.forEach(function (be, n) { vline(be, col.amber, P.w < 520 ? '' : 'Breakeven ' + fmtPrice(be), [5, 4], 1, res.bes.length > 1 && n === 0); });
+
+    // P/L at expiry: green above zero, red below
+    var expPath = function () { ctx.beginPath(); xs.forEach(function (s, n) { if (n) ctx.lineTo(x(s), y(res.plExp(s))); else ctx.moveTo(x(s), y(res.plExp(s))); }); };
+    [[m.t, y0 - m.t, col.up], [y0, m.t + ph - y0, col.down]].forEach(function (z) {
+      if (z[1] <= 0) return;
+      ctx.save(); ctx.beginPath(); ctx.rect(m.l, z[0], pw, z[1]); ctx.clip();
+      expPath(); ctx.lineTo(x(x1), y0); ctx.lineTo(x(x0), y0); ctx.closePath();
+      ctx.fillStyle = z[2]; ctx.globalAlpha = 0.13; ctx.fill(); ctx.globalAlpha = 1;
+      expPath(); ctx.strokeStyle = z[2]; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
+      ctx.restore();
+    });
+    // P/L today
+    ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t, pw, ph); ctx.clip();
+    ctx.beginPath(); now.forEach(function (pt, n) { if (n) ctx.lineTo(x(pt[0]), y(pt[1])); else ctx.moveTo(x(pt[0]), y(pt[1])); });
+    ctx.strokeStyle = col.accent; ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+
+    labels.forEach(function (l) {
+      ctx.fillStyle = col.surface; ctx.globalAlpha = 0.85; ctx.fillRect(l.x - 3, l.y - 8, l.w + 6, 16); ctx.globalAlpha = 1;
+      ctx.fillStyle = l.color; ctx.textAlign = 'left'; ctx.fillText(l.text, l.x, l.y);
+    });
+
+    stratGeom = { m: m, pw: pw, x0: x0, x1: x1, x: x, w: P.w };
+    if (hoverS != null) {
+      var hx = x(hoverS), e = res.plExp(hoverS);
+      ctx.strokeStyle = col.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(hx + 0.5, m.t); ctx.lineTo(hx + 0.5, m.t + ph); ctx.stroke();
+      ctx.fillStyle = col.surface; ctx.strokeStyle = e >= 0 ? col.up : col.down; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(hx, y(e), 4, 0, 7); ctx.fill(); ctx.stroke();
+    }
+  }
+  function stratHover(e) {
+    if (!stratGeom || !stratView) return;
+    var g = stratGeom, r = $('st-canvas').getBoundingClientRect();
+    var f = Math.max(0, Math.min(1, (e.clientX - r.left - g.m.l) / g.pw)), s = g.x0 + f * (g.x1 - g.x0);
+    drawStrategy(s);
+    var tip = $('st-tip'), pl = stratView.res.plExp(s);
+    tip.innerHTML = '';
+    var b = document.createElement('b'); b.textContent = fmtPL(pl); b.className = pl >= 0 ? 'up' : 'down'; tip.appendChild(b);
+    var sp = document.createElement('span');
+    sp.textContent = ' at expiry · today ' + fmtPL(stratView.res.plNow(s)) + ' · price ' + fmtPrice(s);
+    tip.appendChild(sp);
+    tip.hidden = false;
+    var tw = tip.offsetWidth, px = g.x(s) + 12;
+    if (px + tw > g.w - 4) px = g.x(s) - tw - 12;
+    tip.style.left = Math.max(4, px) + 'px';
+  }
+
   /* ---------- theme ---------- */
   var SUN = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
   var MOON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>';
@@ -737,10 +978,10 @@
     $('mc-vol').addEventListener('input', rerun);
     $('mc-drift').addEventListener('input', rerun);
     $('mc-target').addEventListener('input', function () { drawMC(); mcStats(); });
-    $('mc-run').addEventListener('click', runMC);
-    $('mc-use-hist').addEventListener('click', function () { setNum('mc-drift', Math.max(-100, Math.min(200, state.histDrift * 100)), 1); runMC(); });
-    $('mc-use-rn').addEventListener('click', function () { var r = num('o-rate'); setNum('mc-drift', isFinite(r) ? r : 0, 2); runMC(); });
-    $('mc-use-zero').addEventListener('click', function () { setNum('mc-drift', 0, 1); runMC(); });
+    $('mc-run').addEventListener('click', function () { runMC(true); });
+    $('mc-use-hist').addEventListener('click', function () { setNum('mc-drift', Math.max(-100, Math.min(200, state.histDrift * 100)), 1); runMC(true); });
+    $('mc-use-rn').addEventListener('click', function () { var r = num('o-rate'); setNum('mc-drift', isFinite(r) ? r : 0, 2); runMC(true); });
+    $('mc-use-zero').addEventListener('click', function () { setNum('mc-drift', 0, 1); runMC(true); });
 
     ['o-spot', 'o-strike', 'o-days', 'o-rate', 'o-vol', 'o-mkt'].forEach(function (id) { $(id).addEventListener('input', renderOptions); });
     document.querySelectorAll('.seg-btn').forEach(function (b) {
@@ -752,6 +993,14 @@
         renderOptions();
       });
     });
+    document.querySelectorAll('#st-presets .chip').forEach(function (c) { c.addEventListener('click', function () { setStrat(c.dataset.strat); }); });
+    var sc = $('st-canvas');
+    sc.addEventListener('mousemove', stratHover);
+    sc.addEventListener('touchstart', function (e) { if (e.touches[0]) stratHover(e.touches[0]); }, { passive: true });
+    sc.addEventListener('touchmove', function (e) { if (e.touches[0]) stratHover(e.touches[0]); }, { passive: true });
+    sc.addEventListener('mouseleave', function () { $('st-tip').hidden = true; drawStrategy(); });
+    setStrat(state.strat);
+
     $('ladder').addEventListener('click', function (e) {
       var tr = e.target.closest ? e.target.closest('tr[data-k]') : null;
       if (tr) { $('o-strike').value = tr.dataset.k; renderOptions(); }

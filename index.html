@@ -175,6 +175,36 @@
           </table>
         </div>
       </section>
+
+      <!-- Strategy builder -->
+      <section class="card card-strat">
+        <header class="card-head">
+          <div>
+            <h2>Strategy builder</h2>
+            <p class="card-sub">Combine options into a classic strategy and see profit or loss per share across prices. Uses the pricer's spot, expiry, rate and volatility.</p>
+          </div>
+        </header>
+        <div class="preset-row" id="st-presets" role="group" aria-label="Strategy presets">
+          <button type="button" class="chip" data-strat="covered">Covered call</button>
+          <button type="button" class="chip" data-strat="protective">Protective put</button>
+          <button type="button" class="chip" data-strat="straddle">Straddle</button>
+          <button type="button" class="chip" data-strat="strangle">Strangle</button>
+          <button type="button" class="chip" data-strat="bull">Bull call spread</button>
+          <button type="button" class="chip" data-strat="condor">Iron condor</button>
+        </div>
+        <p class="strat-desc" id="st-desc"></p>
+        <div class="legs" id="st-legs"></div>
+        <div class="chart-wrap chart-mid"><canvas id="st-canvas" role="img" aria-label="Strategy profit and loss at expiry and today across prices"></canvas><div class="tooltip" id="st-tip" hidden></div></div>
+        <div class="legend legend-bottom"><span class="legend-item"><i class="swatch swatch-pl"></i>Profit / loss at expiry</span><span class="legend-item"><i class="swatch swatch-dash"></i>Profit / loss today</span><span class="legend-item"><i class="swatch swatch-amber"></i>Breakeven</span></div>
+        <div class="stat-grid">
+          <div class="stat"><span class="stat-label">Works best with</span><span class="stat-value" id="st-best">—</span></div>
+          <div class="stat"><span class="stat-label" id="st-cost-label">Net cost</span><span class="stat-value num" id="st-cost">—</span></div>
+          <div class="stat"><span class="stat-label">Max profit</span><span class="stat-value num up" id="st-maxp">—</span></div>
+          <div class="stat"><span class="stat-label">Max loss</span><span class="stat-value num down" id="st-maxl">—</span></div>
+          <div class="stat"><span class="stat-label">Breakeven</span><span class="stat-value num" id="st-be">—</span></div>
+          <div class="stat"><span class="stat-label">Chance of profit</span><span class="stat-value num" id="st-prob">—</span></div>
+        </div>
+      </section>
     </div>
 
     <p class="footnote" id="footnote">Models assume lognormal returns, constant volatility and no dividends. A teaching tool, not trading advice.</p>

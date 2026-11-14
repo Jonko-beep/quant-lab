@@ -258,6 +258,28 @@ kbd {
 .ladder tbody tr.sel .strike-col { box-shadow: inset 3px 0 0 var(--accent); }
 .ladder td.dim { color: var(--muted); }
 
+/* Strategy builder */
+.chart-mid { height: 300px; }
+.swatch-pl { background: linear-gradient(90deg, var(--down) 50%, var(--up) 50%); }
+.swatch-dash { background: repeating-linear-gradient(90deg, var(--accent) 0 5px, transparent 5px 8px); }
+.strat-desc { font-size: 13.5px; color: var(--ink); max-width: 80ch; }
+.legs { display: flex; flex-wrap: wrap; gap: 8px; }
+.leg {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 12px 4px 4px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font-size: 13px;
+}
+.leg-side { padding: 5px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+.leg-side.buy { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); }
+.leg-side.sell { color: var(--down); background: color-mix(in srgb, var(--down) 14%, transparent); }
+.leg-what { color: var(--ink); }
+.leg label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.leg input {
+  width: 88px; height: 30px; padding: 0 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+  font-family: var(--font-mono); font-size: 13px; color: var(--ink);
+}
+.leg input:focus { outline: 0; border-color: var(--accent); }
+.leg-price { color: var(--muted); font-size: 12.5px; }
+
 .footnote { font-size: 12.5px; color: var(--muted); max-width: 90ch; }
 
 /* Data source panel */
