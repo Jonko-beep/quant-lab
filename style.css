@@ -1,5 +1,6 @@
 /* Quant Lab. Layout: sticky top bar, quote strip, then a 12-column card grid
-   (history and Monte Carlo full width, pricer 7 / ladder 5). */
+   (history 7 / volatility 5, Monte Carlo full width, pricer 7 / ladder 5,
+   strategy builder full width). Each card ends with a plain-English takeaway. */
 :root {
   --bg: #f3f5f4;
   --surface: #ffffff;
@@ -185,8 +186,11 @@ kbd {
   display: flex; flex-direction: column; gap: 16px;
 }
 @media (min-width: 1000px) {
-  .card-opt { grid-column: span 7; }
-  .card-ladder { grid-column: span 5; }
+  .card-history, .card-opt { grid-column: span 7; }
+  .card-vol, .card-ladder { grid-column: span 5; }
+  /* the history chart stretches to match the taller volatility card beside it */
+  .card-history .chart-wrap { flex: 1 1 260px; height: auto; min-height: 260px; }
+  .card-history .chart-wrap canvas { position: absolute; inset: 0; }
 }
 .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px 20px; }
 .card-head h2 { font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
@@ -257,6 +261,24 @@ kbd {
 .ladder tbody tr.atm td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .ladder tbody tr.sel .strike-col { box-shadow: inset 3px 0 0 var(--accent); }
 .ladder td.dim { color: var(--muted); }
+
+/* Plain-English takeaway at the foot of each card */
+.takeaway {
+  margin-top: auto; padding: 10px 14px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  font-size: 13.5px; line-height: 1.55; color: var(--ink);
+}
+.takeaway-tag {
+  display: block; margin-bottom: 2px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--accent);
+}
+.takeaway b { font-family: var(--font-mono); font-size: .95em; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Volatility check */
+.h2-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.vol-pill { white-space: nowrap; font-family: var(--font-mono); padding: 3px 10px; }
+.vol-pill[data-level="high"], .vol-pill[data-level="above"] { color: var(--amber); border-color: var(--amber); }
+.vol-pill[data-level="low"], .vol-pill[data-level="below"] { color: var(--accent); border-color: var(--accent); }
 
 /* Strategy builder */
 .chart-mid { height: 300px; }

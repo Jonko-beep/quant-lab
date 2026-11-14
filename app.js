@@ -97,12 +97,12 @@
       if (x === Infinity) return 1;
       return QL.normCdf(-(Math.log(S / x) + (r - 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T)));
     };
-    var edges = [0].concat(bes, [Infinity]), prob = 0;
+    var edges = [0].concat(bes, [Infinity]), prob = 0, zones = []; // zones: price ranges that end in profit
     for (var j = 0; j + 1 < edges.length; j++) {
       var lo = edges[j], hi = edges[j + 1], mid = hi === Infinity ? lo * 2 + 1 : (lo + hi) / 2;
-      if (plExp(mid) > 0) prob += cdf(hi) - cdf(lo);
+      if (plExp(mid) > 0) { prob += cdf(hi) - cdf(lo); zones.push([lo, hi]); }
     }
-    return { prices: prices, cost: cost, plExp: plExp, plNow: plNow, knots: knots, maxP: maxP, maxL: maxL, bes: bes, prob: prob };
+    return { prices: prices, cost: cost, plExp: plExp, plNow: plNow, knots: knots, maxP: maxP, maxL: maxL, bes: bes, prob: prob, zones: zones };
   };
 
   QL.logReturns = function (c) {
@@ -121,6 +121,20 @@
     var r = QL.logReturns(closes);
     if (r.length < 2) return NaN;
     return QL.stdev(r.slice(-Math.min(n, r.length))) * Math.sqrt(ann);
+  };
+  // Rolling annualized volatility. out[i] covers the n returns ending at close i; null before that.
+  QL.rollingVol = function (closes, n, ann) {
+    var r = QL.logReturns(closes), out = new Array(closes.length).fill(null);
+    for (var i = n; i < closes.length; i++) out[i] = QL.stdev(r.slice(i - n, i)) * Math.sqrt(ann);
+    return out;
+  };
+  // Share of the earlier values that sit below the latest one, from 0 to 1.
+  QL.percentRank = function (vals) {
+    var n = vals.length;
+    if (n < 2) return NaN;
+    var cur = vals[n - 1], below = 0;
+    for (var i = 0; i < n - 1; i++) if (vals[i] < cur) below++;
+    return below / (n - 1);
   };
   QL.maxDrawdown = function (c) {
     var peak = c[0], mdd = 0;
@@ -204,7 +218,7 @@
     var tailN = Math.max(1, Math.floor(n * 0.05)), tail = 0;
     for (var j = 0; j < tailN; j++) tail += t[j];
     return {
-      median: QL.quantile(t, 0.5), p5: q05, p95: QL.quantile(t, 0.95),
+      median: QL.quantile(t, 0.5), p5: q05, p95: QL.quantile(t, 0.95), p25: QL.quantile(t, 0.25), p75: QL.quantile(t, 0.75),
       probAbove: above / n, expRet: sum / n / s0 - 1,
       var95: q05 / s0 - 1, cvar95: tail / tailN / s0 - 1
     };
@@ -265,7 +279,7 @@
   var KEY_STORE = 'quantlab.twelvedata.key';
   var CACHE_MS = 5 * 60 * 1000;
   var cache = {};
-  var state = { symbol: 'NVDA', data: null, sim: null, optType: 'call', mode: 'sample', strat: 'covered', stratK: {} };
+  var state = { symbol: 'NVDA', data: null, sim: null, optType: 'call', mode: 'sample', strat: 'covered', stratK: {}, vol: null };
 
   var store = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -309,6 +323,44 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { t.hidden = true; }, 6000);
   }
+
+  /* ---------- plain-English takeaways ---------- */
+  // parts: plain strings, or [text] for an emphasised figure. Pass null to hide the line.
+  function say(id, parts) {
+    var el = $(id);
+    el.innerHTML = '';
+    if (!parts) { el.hidden = true; return; }
+    var tag = document.createElement('span'); tag.className = 'takeaway-tag'; tag.textContent = 'In plain English';
+    el.appendChild(tag);
+    parts.forEach(function (p) {
+      if (typeof p === 'string') el.appendChild(document.createTextNode(p));
+      else { var b = document.createElement('b'); b.textContent = p[0]; el.appendChild(b); }
+    });
+    el.hidden = false;
+  }
+  // A probability as an everyday fraction: 0.34 -> "about 1 in 3".
+  var ODDS = [[1, 100], [1, 50], [1, 20], [1, 10], [1, 8], [1, 6], [1, 5], [1, 4], [1, 3], [2, 5], [1, 2], [3, 5], [2, 3], [3, 4], [4, 5], [5, 6], [7, 8], [9, 10], [19, 20], [49, 50], [99, 100]];
+  function oddsText(p) {
+    if (!(p >= 0.005)) return 'almost none';
+    if (p > 0.995) return 'almost all';
+    var best = ODDS[0];
+    ODDS.forEach(function (f) { if (Math.abs(f[0] / f[1] - p) < Math.abs(best[0] / best[1] - p)) best = f; });
+    return best[1] === 2 ? 'about half' : 'about ' + best[0] + ' in ' + best[1];
+  }
+  // A number of days as rough calendar time: 126 trading days -> "about 6 months".
+  function spanWords(days, ann) {
+    var months = days / ann * 12;
+    if (months < 0.9) { var w = Math.max(1, Math.round(days / (ann / 52))); return 'about ' + w + (w === 1 ? ' week' : ' weeks'); }
+    if (months < 23.5) { var mo = Math.round(months); return mo === 12 ? 'about a year' : 'about ' + mo + (mo === 1 ? ' month' : ' months'); }
+    return 'about ' + Math.round(months / 12 * 2) / 2 + ' years';
+  }
+  // How to describe the stretch of history on screen: n is the number of daily steps it covers.
+  function periodText(d, n) {
+    if (n >= d.ann * 0.9) return 'the past year';
+    return d.dates ? 'the past ' + n + (d.ann === 365 ? ' days' : ' trading days') : 'these ' + (n + 1) + ' prices';
+  }
+  function unitWord() { return state.data && state.data.ann === 365 ? 'unit' : 'share'; }
+  function fmtSmall(v) { return v >= 0.1 ? v.toFixed(2) : v >= 0.01 ? v.toFixed(3) : v.toFixed(4); }
 
   /* ---------- data sources ---------- */
   function hashStr(s) { var h = 2166136261; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
@@ -449,6 +501,8 @@
       : d.source === 'pasted' ? 'Price history pasted by you. ' : 'Sample series are simulated and indexed to 100. ';
     $('footnote').textContent = src + 'Models assume lognormal returns, constant volatility and no dividends. A teaching tool, not trading advice.';
 
+    histTake(d, year, last, ret, hi);
+    renderVol();
     state.stratK = {};
     drawHistory();
     runMC(true);
@@ -468,13 +522,27 @@
     ctx.textBaseline = 'middle';
     return { ctx: ctx, w: r.width, h: r.height };
   }
-  function gridY(ctx, ticks, y, x0, x1, labelX, step, col) {
+  function gridY(ctx, ticks, y, x0, x1, labelX, step, col, suffix) {
     ctx.lineWidth = 1;
     ticks.forEach(function (v) {
       var py = Math.round(y(v)) + 0.5;
       ctx.strokeStyle = col.line; ctx.beginPath(); ctx.moveTo(x0, py); ctx.lineTo(x1, py); ctx.stroke();
-      ctx.fillStyle = col.muted; ctx.textAlign = 'left'; ctx.fillText(fmtAxis(v, step), labelX, py);
+      ctx.fillStyle = col.muted; ctx.textAlign = 'left'; ctx.fillText(fmtAxis(v, step) + (suffix || ''), labelX, py);
     });
+  }
+  // Month names along the bottom of a dated chart, or a point count when there are no dates.
+  function monthAxis(ctx, dates, count, x, left, right, py, col) {
+    ctx.fillStyle = col.muted; ctx.textAlign = 'center';
+    if (dates) {
+      var lastX = -99;
+      for (var i = 1; i < dates.length; i++) {
+        if (dates[i].slice(5, 7) !== dates[i - 1].slice(5, 7) && x(i) - lastX > 44 && x(i) < right - 14 && x(i) > left + 14) {
+          ctx.fillText(MONTHS[+dates[i].slice(5, 7) - 1], x(i), py); lastX = x(i);
+        }
+      }
+    } else {
+      ctx.textAlign = 'left'; ctx.fillText(count + ' observations', left, py);
+    }
   }
   function palette() { return { ink: css('--ink'), muted: css('--muted'), line: css('--line'), accent: css('--accent'), amber: css('--amber'), surface: css('--surface'), up: css('--up'), down: css('--down') }; }
 
@@ -494,18 +562,7 @@
     var tk = QL.ticks(lo, hi, 5), step = tk.length > 1 ? tk[1] - tk[0] : 1;
     gridY(ctx, tk, y, m.l, m.l + pw, m.l + pw + 8, step, col);
 
-    // month labels
-    ctx.fillStyle = col.muted; ctx.textAlign = 'center';
-    if (dates) {
-      var lastX = -99;
-      for (var i = 1; i < dates.length; i++) {
-        if (dates[i].slice(5, 7) !== dates[i - 1].slice(5, 7) && x(i) - lastX > 44 && x(i) < m.l + pw - 14 && x(i) > m.l + 14) {
-          ctx.fillText(MONTHS[+dates[i].slice(5, 7) - 1], x(i), P.h - 10); lastX = x(i);
-        }
-      }
-    } else {
-      ctx.textAlign = 'left'; ctx.fillText(c.length + ' observations', m.l, P.h - 10);
-    }
+    monthAxis(ctx, dates, c.length, x, m.l, m.l + pw, P.h - 10, col);
 
     // area + line
     ctx.beginPath();
@@ -551,6 +608,96 @@
     tip.style.left = Math.max(4, px) + 'px';
   }
 
+  function histTake(d, year, last, ret, hi) {
+    var parts = [(d.source === 'sample' ? 'This sample series' : d.symbol) + ' is ' + (ret >= 0 ? 'up ' : 'down '), [fmtPct(Math.abs(ret))],
+      ' over ' + periodText(d, year.length - 1)];
+    var off = last / hi - 1;
+    if (off > -0.0005) parts.push(' and is at its highest close of that period.');
+    else parts.push(' and sits ', [fmtPct(-off)], ' below its highest close of that period, ', [fmtPrice(hi)], '.');
+    var mdd = QL.maxDrawdown(year);
+    if (mdd < -0.0005) parts.push(' Its deepest fall from a peak along the way was ', [fmtPct(-mdd)], '.');
+    say('hist-take', parts);
+  }
+
+  /* ---------- volatility check ---------- */
+  var VOL_WIN = 20;
+  var VOL_LEVELS = [
+    [0.8, 'high', 'High', 'much more than usual'], [0.6, 'above', 'Above normal', 'a little more than usual'],
+    [0.4, 'normal', 'Normal', 'about as much as usual'], [0.2, 'below', 'Below normal', 'a little less than usual'],
+    [-1, 'low', 'Low', 'much less than usual']
+  ];
+  function renderVol() {
+    var d = state.data; if (!d) return;
+    var n = Math.min(d.closes.length, d.ann + 1);
+    var roll = QL.rollingVol(d.closes, VOL_WIN, d.ann).slice(-n), dates = d.dates ? d.dates.slice(-n) : null;
+    var first = 0; while (first < roll.length && roll[first] == null) first++;
+    var v = roll.slice(first);
+    if (v.length < 5 || !(v[v.length - 1] > 0)) {
+      state.vol = null; $('vol-pill').hidden = true; say('vol-take', null); drawVol();
+      return;
+    }
+    var sorted = v.slice().sort(function (a, b) { return a - b; });
+    var cur = v[v.length - 1], rank = QL.percentRank(v);
+    var lvl = VOL_LEVELS.filter(function (l) { return rank >= l[0]; })[0];
+    state.vol = { v: v, dates: dates ? dates.slice(first) : null, q25: QL.quantile(sorted, 0.25), q75: QL.quantile(sorted, 0.75), lo: sorted[0], hi: sorted[sorted.length - 1] };
+    var pill = $('vol-pill'); pill.textContent = lvl[2]; pill.dataset.level = lvl[1]; pill.hidden = false;
+    var fullYear = v.length - 1 >= d.ann * 0.9, where = fullYear ? 'of the past year' : 'in this price history';
+    var parts = [(d.source === 'sample' ? "This sample series'" : d.symbol + "'s") + ' ' + VOL_WIN + '-day volatility is ', [fmtPct(cur)], ' a year, '];
+    if (rank >= 1) parts.push('its highest reading ' + where);
+    else if (rank <= 0) parts.push('its lowest reading ' + where);
+    else if (fullYear) parts.push('higher than on ', [fmtPct(rank, false, 0)], ' of days in the past year');
+    else parts.push('higher than ', [fmtPct(rank, false, 0)], ' of the ' + (v.length - 1) + ' earlier readings in this price history');
+    parts.push(', so the price has been swinging ' + lvl[3] + '. At this level a typical day moves it about ', [fmtPct(cur / Math.sqrt(d.ann))], ' up or down.');
+    say('vol-take', parts);
+    drawVol();
+  }
+
+  var volGeom = null;
+  function drawVol(hover) {
+    var V = state.vol, P = prep($('vol-canvas'));
+    volGeom = null;
+    if (!V) return;
+    var ctx = P.ctx, col = palette(), v = V.v;
+    var m = { l: 6, r: 50, t: 10, b: 24 }, pw = P.w - m.l - m.r, ph = P.h - m.t - m.b;
+    var pad = (V.hi - V.lo) * 0.12 || V.hi * 0.1, lo = Math.max(0, V.lo - pad) * 100, hi = (V.hi + pad) * 100;
+    var x = function (i) { return m.l + (v.length > 1 ? i / (v.length - 1) : 0) * pw; };
+    var y = function (val) { return m.t + (1 - (val * 100 - lo) / (hi - lo)) * ph; };
+    var tk = QL.ticks(lo, hi, 5), step = tk.length > 1 ? tk[1] - tk[0] : 1;
+    gridY(ctx, tk, function (pct) { return y(pct / 100); }, m.l, m.l + pw, m.l + pw + 8, step, col, '%');
+    monthAxis(ctx, V.dates, v.length, x, m.l, m.l + pw, P.h - 10, col);
+
+    // typical range: the middle half of the year's readings
+    ctx.fillStyle = col.accent; ctx.globalAlpha = 0.14;
+    ctx.fillRect(m.l, y(V.q75), pw, y(V.q25) - y(V.q75)); ctx.globalAlpha = 1;
+
+    ctx.beginPath();
+    v.forEach(function (val, i) { if (i) ctx.lineTo(x(i), y(val)); else ctx.moveTo(x(i), y(val)); });
+    ctx.strokeStyle = col.accent; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.stroke();
+    ctx.fillStyle = col.accent; ctx.beginPath(); ctx.arc(x(v.length - 1), y(v[v.length - 1]), 3.5, 0, 7); ctx.fill();
+
+    volGeom = { m: m, pw: pw, n: v.length, x: x, w: P.w };
+    if (hover != null) {
+      var hx = x(hover);
+      ctx.strokeStyle = col.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(hx + 0.5, m.t); ctx.lineTo(hx + 0.5, m.t + ph); ctx.stroke();
+      ctx.fillStyle = col.surface; ctx.strokeStyle = col.accent; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(hx, y(v[hover]), 4, 0, 7); ctx.fill(); ctx.stroke();
+    }
+  }
+  function volHover(e) {
+    if (!volGeom || !state.vol) return;
+    var g = volGeom, V = state.vol, r = $('vol-canvas').getBoundingClientRect();
+    var i = Math.max(0, Math.min(g.n - 1, Math.round((e.clientX - r.left - g.m.l) / g.pw * (g.n - 1))));
+    drawVol(i);
+    var tip = $('vol-tip');
+    tip.innerHTML = '';
+    var b = document.createElement('b'); b.textContent = fmtPct(V.v[i]); tip.appendChild(b);
+    var sp = document.createElement('span'); sp.textContent = ' ' + (V.dates ? fmtDate(V.dates[i]) : 'obs ' + (i + 1)); tip.appendChild(sp);
+    tip.hidden = false;
+    var tw = tip.offsetWidth, px = g.x(i) + 12;
+    if (px + tw > g.w - 4) px = g.x(i) - tw - 12;
+    tip.style.left = Math.max(4, px) + 'px';
+  }
+
   /* ---------- Monte Carlo ---------- */
   var mcAnim = 0;
   function reducedMotion() { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
@@ -586,6 +733,11 @@
     var e = $('s-exp'); e.textContent = fmtPct(s.expRet, true); e.className = 'stat-value num ' + (s.expRet >= 0 ? 'up' : 'down');
     $('s-var').textContent = fmtPct(s.var95, true);
     $('s-cvar').textContent = fmtPct(s.cvar95, true);
+    var ann = state.data ? state.data.ann : 252, hasTarget = isFinite(num('mc-target'));
+    say('mc-take', ['With these settings, ' + oddsText(s.probAbove) + ' of the simulated paths (', [fmtPct(s.probAbove)], ') end above ' +
+      (hasTarget ? 'the ' : "today's price of "), [fmtPrice(target)], (hasTarget ? ' target' : '') + ' after ' + sim.steps +
+      (ann === 365 ? ' days' : ' trading days') + ' (' + spanWords(sim.steps, ann) + '). Half of them finish between ', [fmtPrice(s.p25)], ' and ', [fmtPrice(s.p75)],
+      ', and 1 in 20 ends below ', [fmtPrice(s.p5)], ' (', [fmtPct(s.var95, true)], ' from today).']);
   }
   function drawMC(prog, fromAnim) {
     var sim = state.sim; if (!sim) return;
@@ -682,6 +834,7 @@
       ['o-price', 'g-delta', 'g-gamma', 'g-vega', 'g-theta', 'g-rho', 'g-iv'].forEach(function (id) { $(id).textContent = '—'; });
       $('o-price-sub').textContent = 'Enter spot, strike, expiry and volatility';
       $('ladder').tBodies[0].innerHTML = '';
+      say('opt-take', null); say('ladder-take', null);
       prep($('opt-canvas'));
       renderStrategy();
       return;
@@ -701,6 +854,15 @@
       ivEl.textContent = iv == null ? 'no solution' : fmtPct(iv, false, 2);
       ivEl.title = iv == null ? 'That price is outside the range any volatility can produce for this option.' : '';
     } else { ivEl.textContent = '—'; ivEl.title = ''; }
+    var call = type === 'call', be = call ? o.K + b.price : o.K - b.price, unit = unitWord();
+    var parts = ['This ' + type + ' costs ', [fmtPrice(b.price)], ' per ' + unit];
+    if (unit === 'share') parts.push(' (', [fmtPrice(+b.price.toFixed(b.price >= 1 ? 2 : 4) * 100)], ' for a standard 100-share contract)');
+    parts.push(' and makes money at expiry only if the price ends ' + (call ? 'above ' : 'below '), [fmtPrice(be)], ', ', [fmtPct(be / o.S - 1, true)], ' from here.');
+    if (Math.abs(b.theta) >= 0.00005) {
+      parts.push(' Each day that passes ' + (b.theta < 0 ? 'takes about ' : 'adds about '), [fmtSmall(Math.abs(b.theta))],
+        (b.theta < 0 ? ' off' : ' to') + ' its value, all else equal.');
+    }
+    say('opt-take', parts);
     drawOption(o, b);
     renderLadder(o);
     renderStrategy();
@@ -769,6 +931,14 @@
       cell(tr, fmtPct(c.pItm));
       body.appendChild(tr);
     }
+    var fmtK = function (K) { return K.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }); };
+    var kUp = +(center + 2 * step).toFixed(6), kDn = +(center - 2 * step).toFixed(6);
+    if (kDn > 0) {
+      var up = QL.bs('call', o.S, kUp, o.T, o.r, o.sigma), dn = QL.bs('call', o.S, kDn, o.T, o.r, o.sigma);
+      say('ladder-take', ['Higher strikes make calls cheaper but less likely to pay off: the ', [fmtK(kUp)], ' call costs ', [fmtPrice(up.price)],
+        ' and the model gives it a ', [fmtPct(up.pItm, false, 0)], ' chance of finishing above its strike, while the ', [fmtK(kDn)], ' call costs ',
+        [fmtPrice(dn.price)], ' with a ', [fmtPct(dn.pItm, false, 0)], ' chance.']);
+    } else say('ladder-take', null);
   }
 
   /* ---------- strategy builder ---------- */
@@ -782,10 +952,11 @@
     condor: { best: 'a quiet market', legs: [['put', 1, -4], ['put', -1, -2], ['call', -1, 2], ['call', 1, 4]], desc: 'You sell a call and a put around the current price and buy further-out ones as protection. You keep the credit if the price stays in the middle.' }
   };
   var stratView = null;
-  function fmtPL(v) {
-    var d = stratView && stratView.S < 1 ? 4 : 2;
-    return (v < 0 ? '−' : '+') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  function fmtAmt(v, S) {
+    var d = S < 1 ? 4 : 2;
+    return Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
   }
+  function fmtPL(v, S) { return (v < 0 ? '−' : '+') + fmtAmt(v, S != null ? S : stratView ? stratView.S : 100); }
 
   function stratLegs(S) {
     var step = QL.niceStep(S * 0.025), center = Math.round(S / step) * step;
@@ -832,6 +1003,7 @@
     if (!ok) {
       stratView = null;
       ['st-cost', 'st-maxp', 'st-maxl', 'st-be', 'st-prob'].forEach(function (id) { $(id).textContent = '—'; });
+      say('st-take', null);
       prep($('st-canvas'));
       return;
     }
@@ -846,13 +1018,38 @@
       el.querySelector('.leg-price').textContent = '@ ' + fmtPrice(res.prices[i]);
     });
     $('st-cost-label').textContent = res.cost >= 0 ? 'Net cost' : 'Net credit';
-    $('st-cost').textContent = fmtPrice(Math.abs(res.cost));
-    $('st-maxp').textContent = res.maxP === Infinity ? 'Unlimited' : fmtPL(res.maxP);
-    $('st-maxl').textContent = res.maxL === -Infinity ? 'Unlimited' : fmtPL(res.maxL);
+    $('st-cost').textContent = fmtAmt(res.cost, o.S);
+    $('st-maxp').textContent = res.maxP === Infinity ? 'Unlimited' : fmtPL(res.maxP, o.S);
+    $('st-maxl').textContent = res.maxL === -Infinity ? 'Unlimited' : fmtPL(res.maxL, o.S);
     $('st-be').textContent = res.bes.length ? res.bes.map(fmtPrice).join(' / ') : '—';
     $('st-prob').textContent = fmtPct(res.prob);
     stratView = { res: res, S: o.S, legs: legs };
+    stratTake(res, o.S);
     drawStrategy();
+  }
+  function stratTake(res, S) {
+    var unit = unitWord(), parts, amt = function (v) { return fmtAmt(v, S); };
+    if (res.cost > 0.005) parts = ['You pay ', [amt(res.cost)], ' per ' + unit + ' up front'];
+    else if (res.cost < -0.005) parts = ['You collect ', [amt(res.cost)], ' per ' + unit + ' up front'];
+    else parts = ['It costs nothing up front'];
+    if (res.zones.length) {
+      parts.push(', and it makes money if the price ends ');
+      res.zones.forEach(function (z, i) {
+        if (i) parts.push(' or ');
+        if (!(z[0] > 0) && z[1] === Infinity) parts.push('anywhere');
+        else if (!(z[0] > 0)) parts.push('below ', [fmtPrice(z[1])]);
+        else if (z[1] === Infinity) parts.push('above ', [fmtPrice(z[0])]);
+        else parts.push('between ', [fmtPrice(z[0])], ' and ', [fmtPrice(z[1])]);
+      });
+      parts.push(' at expiry; the model puts that at a ', [fmtPct(res.prob, false, 0)], ' chance.');
+    } else parts.push(', but with these strikes it cannot make money at expiry.');
+    if (res.maxL === -Infinity) parts.push(' The possible loss has no limit');
+    else if (res.maxL < -0.005) parts.push(' The most you can lose is ', [amt(res.maxL)]);
+    else parts.push(' It cannot lose money at expiry');
+    if (res.maxP === Infinity) parts.push(', and there is no cap on the gain.');
+    else if (res.maxP > 0.005) parts.push(', and the most you can make is ', [amt(res.maxP)], '.');
+    else parts.push('.');
+    say('st-take', parts);
   }
 
   var stratGeom = null;
@@ -951,7 +1148,7 @@
     btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
     redraw();
   }
-  function redraw() { drawHistory(); drawMC(); if (state.data) renderOptions(); }
+  function redraw() { drawHistory(); drawVol(); drawMC(); if (state.data) renderOptions(); }
 
   /* ---------- data source panel ---------- */
   function openModal() { $('key-input').value = getKey(); $('data-msg').textContent = ''; $('data-modal').hidden = false; $('key-input').focus(); }
@@ -969,6 +1166,12 @@
     cv.addEventListener('touchstart', function (e) { if (e.touches[0]) histHover(e.touches[0]); }, { passive: true });
     cv.addEventListener('touchmove', function (e) { if (e.touches[0]) histHover(e.touches[0]); }, { passive: true });
     cv.addEventListener('mouseleave', function () { $('hist-tip').hidden = true; drawHistory(); });
+
+    var vc = $('vol-canvas');
+    vc.addEventListener('mousemove', volHover);
+    vc.addEventListener('touchstart', function (e) { if (e.touches[0]) volHover(e.touches[0]); }, { passive: true });
+    vc.addEventListener('touchmove', function (e) { if (e.touches[0]) volHover(e.touches[0]); }, { passive: true });
+    vc.addEventListener('mouseleave', function () { $('vol-tip').hidden = true; drawVol(); });
 
     var rerun = debounce(runMC, 90);
     $('mc-paths').addEventListener('input', function () { $('mc-paths-out').textContent = (+this.value).toLocaleString('en-US'); rerun(); });

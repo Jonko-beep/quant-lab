@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Quant Lab</title>
-  <meta name="description" content="Quant toolkit: Monte Carlo price simulation, Black-Scholes option pricing with Greeks, implied volatility solver." />
+  <meta name="description" content="Quant toolkit: Monte Carlo price simulation, Black-Scholes option pricing with Greeks, a volatility check, an options strategy builder, and plain-English takeaways." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -88,6 +88,20 @@
           <div class="legend" id="hist-legend"><span class="legend-item"><i class="swatch swatch-accent"></i>Close</span><span class="legend-item"><i class="swatch swatch-muted"></i>20-day mean</span></div>
         </header>
         <div class="chart-wrap"><canvas id="hist-canvas" role="img" aria-label="Price history line chart"></canvas><div class="tooltip" id="hist-tip" hidden></div></div>
+        <p class="takeaway" id="hist-take" hidden></p>
+      </section>
+
+      <!-- Volatility check -->
+      <section class="card card-vol">
+        <header class="card-head">
+          <div>
+            <h2 class="h2-row">Volatility check <span class="status-pill vol-pill" id="vol-pill" hidden></span></h2>
+            <p class="card-sub">How much the price has been swinging lately, measured over rolling 20-day windows, compared with its own past year.</p>
+          </div>
+        </header>
+        <div class="chart-wrap"><canvas id="vol-canvas" role="img" aria-label="Rolling 20-day volatility line chart with its typical range"></canvas><div class="tooltip" id="vol-tip" hidden></div></div>
+        <div class="legend legend-bottom"><span class="legend-item"><i class="swatch swatch-accent"></i>20-day volatility</span><span class="legend-item"><i class="swatch swatch-band"></i>Typical range (middle half)</span></div>
+        <p class="takeaway" id="vol-take" hidden></p>
       </section>
 
       <!-- Monte Carlo -->
@@ -117,6 +131,7 @@
           <div class="stat"><span class="stat-label">95% VaR</span><span class="stat-value num" id="s-var">—</span></div>
           <div class="stat"><span class="stat-label">95% CVaR</span><span class="stat-value num" id="s-cvar">—</span></div>
         </div>
+        <p class="takeaway" id="mc-take" hidden></p>
       </section>
 
       <!-- Options -->
@@ -156,6 +171,7 @@
         </div>
         <div class="chart-wrap"><canvas id="opt-canvas" role="img" aria-label="Option payoff at expiry and theoretical value today across spot prices"></canvas></div>
         <div class="legend legend-bottom"><span class="legend-item"><i class="swatch swatch-accent"></i>Value today</span><span class="legend-item"><i class="swatch swatch-muted"></i>Payoff at expiry</span><span class="legend-item"><i class="swatch swatch-amber"></i>Breakeven</span></div>
+        <p class="takeaway" id="opt-take" hidden></p>
       </section>
 
       <!-- Strike ladder -->
@@ -174,6 +190,7 @@
             <tbody></tbody>
           </table>
         </div>
+        <p class="takeaway" id="ladder-take" hidden></p>
       </section>
 
       <!-- Strategy builder -->
@@ -204,6 +221,7 @@
           <div class="stat"><span class="stat-label">Breakeven</span><span class="stat-value num" id="st-be">—</span></div>
           <div class="stat"><span class="stat-label">Chance of profit</span><span class="stat-value num" id="st-prob">—</span></div>
         </div>
+        <p class="takeaway" id="st-take" hidden></p>
       </section>
     </div>
 
